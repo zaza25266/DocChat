@@ -127,7 +127,8 @@ The lifecycle of a question in DocChat proceeds through five distinct stages:
 ### 1. Document Processing and Caching
 Located in `document_processor/file_handler.py`.
 
-- **Docling Conversion**: Standard text extractors often lose tables, reading order, and document hierarchies. IBM Docling preserves tables, headings, and formatting by converting documents into unified Markdown.
+- **Docling Conversion**: Standard text extractors often lose tables, reading order, and document hierarchies. IBM Docling preserves tables, headings, and formatting by converting documents into unified Markdown. On its first execution on a PDF, Docling automatically downloads its layout analysis and table recognition models (~500 MB) from Hugging Face. These weights are permanently cached in `~/.cache/huggingface/hub/` on your computer, meaning future executions run entirely offline without re-downloading.
+- **Direct Text/Markdown Ingestion**: For `.txt` and `.md` files, DocChat reads the text directly and applies header splitting, bypassing heavy neural models for maximum speed.
 - **Markdown Header Splitting**: Rather than cutting text arbitrarily at a fixed character count (which can split sentences or tables in half), `MarkdownHeaderTextSplitter` splits text along logical heading boundaries (`#` and `##`), ensuring each chunk maintains semantic coherence.
 - **Content Hash Caching**: Repeatedly parsing large documents is computationally expensive. DocChat computes a SHA-256 hash of the binary file content:
   - If a `.pkl` cache file matching the hash exists and has not expired, chunks are loaded from disk in milliseconds.

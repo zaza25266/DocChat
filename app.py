@@ -147,6 +147,14 @@ st.title("DocChat: Document Question Answering")
 st.markdown("Multi-agent question answering with hybrid retrieval, relevance checking, and automated verification.")
 
 with st.expander("Document Management", expanded=(st.session_state.retriever is None)):
+    st.info(
+        "First-Time Setup Note: When processing a PDF for the first time, Docling automatically "
+        "downloads layout and parsing models (~500 MB) from Hugging Face. This download happens "
+        "only once and the files are permanently cached on your machine (~/.cache/huggingface). "
+        "All subsequent runs use the local cache without redownloading. Ensure a stable internet "
+        "connection during the initial PDF run."
+    )
+
     uploaded_files = st.file_uploader(
         "Upload reference documents",
         type=[ext.lstrip(".") for ext in ALLOWED_TYPES],
@@ -169,7 +177,27 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
                     chunks = processor.process(saved_paths)
 
                     if not chunks:
-                        st.error("No valid text chunks could be extracted from uploaded files.")
+                        error_details = ""
+                        has_network_issue = False
+                        if processor.last_errors:
+                            lines = []
+                            for fname, err in processor.last_errors:
+                                lines.append(f"- {fname}: {err}")
+                                if any(term in err.lower() for term in ["timed out", "resolution", "connection", "safetensors", "huggingface"]):
+                                    has_network_issue = True
+                            error_details = "\n" + "\n".join(lines)
+
+                        base_msg = "No valid text chunks could be extracted from uploaded files."
+                        if has_network_issue:
+                            st.error(
+                                f"{base_msg}\n\n"
+                                "Network error detected during initial model download from Hugging Face.\n"
+                                f"Details:{error_details}\n\n"
+                                "Please check your internet connection or DNS and click 'Process and Index Documents' "
+                                "again to resume and complete the one-time model download."
+                            )
+                        else:
+                            st.error(f"{base_msg}{error_details}")
                     else:
                         builder = RetrieverBuilder(
                             project_id=project_id_input,

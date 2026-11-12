@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Union, Any
 from docling.document_converter import DocumentConverter
 from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain.schema import Document
 from config import constants
 from config.settings import settings
 from utils.logging import logger
@@ -16,6 +17,7 @@ class DocumentProcessor:
         self.cache_dir = Path(cache_dir or settings.CACHE_DIR)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_expire_days = cache_expire_days if cache_expire_days is not None else settings.CACHE_EXPIRE_DAYS
+        self.last_errors: List[tuple] = []
 
     def _resolve_file_path(self, file_item: Any) -> Path:
         if isinstance(file_item, Path):
@@ -48,6 +50,7 @@ class DocumentProcessor:
 
     def process(self, files: List[Any]) -> List:
         self.validate_files(files)
+        self.last_errors = []
         all_chunks = []
         seen_hashes = set()
 
@@ -75,6 +78,7 @@ class DocumentProcessor:
 
             except Exception as e:
                 logger.error(f"Failed to process {path.name}: {str(e)}")
+                self.last_errors.append((path.name, str(e)))
                 continue
 
         logger.info(f"Total unique chunks: {len(all_chunks)}")
@@ -86,6 +90,22 @@ class DocumentProcessor:
         if not path_str.lower().endswith(valid_extensions):
             logger.warning(f"Skipping unsupported file type: {path_str}")
             return []
+
+        if path_str.lower().endswith((".txt", ".md")):
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    markdown = f.read()
+
+                splitter = MarkdownHeaderTextSplitter(self.headers)
+                chunks = splitter.split_text(markdown)
+                if not chunks and markdown.strip():
+                    chunks = [Document(page_content=markdown.strip(), metadata={"source": file_path.name})]
+
+                for chunk in chunks:
+                    chunk.metadata["source"] = file_path.name
+                return chunks
+            except Exception as e:
+                logger.warning(f"Direct text parsing fallback to Docling for {file_path.name}: {e}")
 
         converter = DocumentConverter()
         converted = converter.convert(path_str)
