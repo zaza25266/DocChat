@@ -29,19 +29,21 @@ class RetrieverBuilder:
             logger.info(f"Initialized local cached embedding model '{local_model}'.")
         elif self.provider in ("openai", "custom", "custom api"):
             from langchain_openai import OpenAIEmbeddings
-            emb_model = model_id or "text-embedding-3-small"
-            target_api_key = (
+            emb_model = (model_id or "text-embedding-3-small").encode("ascii", "ignore").decode("ascii").strip()
+            raw_key = (
                 api_key
                 or (getattr(settings, "CUSTOM_API_KEY", "") if self.provider in ("custom", "custom api") else "")
                 or getattr(settings, "OPENAI_API_KEY", "")
                 or os.environ.get("CUSTOM_API_KEY", "")
                 or os.environ.get("OPENAI_API_KEY", "")
-            ).strip()
+            )
+            target_api_key = raw_key.encode("ascii", "ignore").decode("ascii").strip() if raw_key else "dummy-key"
+            raw_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
+            target_url = raw_url.encode("ascii", "ignore").decode("ascii").strip() if raw_url else ""
             init_kwargs = {
                 "model": emb_model,
-                "api_key": target_api_key or "dummy-key"
+                "api_key": target_api_key
             }
-            target_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
             if target_url:
                 init_kwargs["base_url"] = target_url
             self.embeddings = OpenAIEmbeddings(**init_kwargs)
@@ -83,14 +85,30 @@ class RetrieverBuilder:
         target_k = k if k is not None else settings.VECTOR_SEARCH_K
         target_weights = weights if weights is not None else settings.HYBRID_RETRIEVER_WEIGHTS
         target_dir = persist_directory or settings.CHROMA_DB_PATH
+        collection_name = getattr(settings, "CHROMA_COLLECTION_NAME", "documents")
 
         try:
+            import chromadb
+            client = chromadb.PersistentClient(path=target_dir)
+            try:
+                # Reset collection so old uploaded files from previous sessions don't contaminate new files
+                existing_cols = client.list_collections()
+                if collection_name in existing_cols:
+                    client.delete_collection(collection_name)
+                    logger.info(f"Deleted existing Chroma collection '{collection_name}' for clean rebuild.")
+                if "langchain" in existing_cols:
+                    client.delete_collection("langchain")
+                    logger.info("Deleted legacy 'langchain' Chroma collection.")
+            except Exception as ce:
+                logger.warning(f"Could not reset existing Chroma collection: {ce}")
+
             vector_store = Chroma.from_documents(
                 documents=docs,
                 embedding=self.embeddings,
-                persist_directory=target_dir
+                client=client,
+                collection_name=collection_name
             )
-            logger.info("Chroma vector store initialized.")
+            logger.info(f"Chroma vector store initialized with {len(docs)} chunks in collection '{collection_name}'.")
 
             bm25 = BM25Retriever.from_documents(docs)
             bm25.k = target_k

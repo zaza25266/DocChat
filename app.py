@@ -1,4 +1,5 @@
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from pathlib import Path
 import streamlit as st
 from config.settings import settings
@@ -129,34 +130,88 @@ with st.sidebar:
     else:
         provider_key = "custom"
         st.subheader("Custom API Settings")
+
+        custom_template = st.selectbox(
+            "Quick Provider Preset",
+            options=[
+                "Groq (Recommended - Free & Blazing Fast)",
+                "Google Gemini (Official OpenAI Endpoint)",
+                "OpenRouter (Free Tier Models)",
+                "Ollama (Local Offline - No Key)",
+                "Custom Provider..."
+            ],
+            index=0,
+            help="Select a provider preset to auto-fill the URL and recommended models, or choose 'Custom Provider...' to enter any URL."
+        )
+
+        if "Groq" in custom_template:
+            default_url = "https://api.groq.com/openai/v1"
+            preset_models = [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "mixtral-8x7b-32768",
+                "gemma2-9b-it",
+                "Custom Model..."
+            ]
+        elif "Google Gemini" in custom_template:
+            default_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            preset_models = [
+                "gemini-1.5-flash",
+                "gemini-2.0-flash-exp",
+                "gemini-1.5-pro",
+                "Custom Model..."
+            ]
+        elif "OpenRouter" in custom_template:
+            default_url = "https://openrouter.ai/api/v1"
+            preset_models = [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "google/gemini-2.0-flash-exp:free",
+                "mistralai/mistral-7b-instruct:free",
+                "deepseek/deepseek-chat:free",
+                "Custom Model..."
+            ]
+        elif "Ollama" in custom_template:
+            default_url = "http://localhost:11434/v1"
+            preset_models = [
+                "llama3.2",
+                "mistral",
+                "qwen2.5",
+                "Custom Model..."
+            ]
+        else:
+            default_url = settings.CUSTOM_API_URL or "https://api.groq.com/openai/v1"
+            preset_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "Custom Model..."]
+
+        if "custom_prev_template" not in st.session_state:
+            st.session_state.custom_prev_template = custom_template
+
+        if st.session_state.custom_prev_template != custom_template:
+            st.session_state.custom_api_url_val = default_url
+            st.session_state.custom_prev_template = custom_template
+        elif "custom_api_url_val" not in st.session_state:
+            st.session_state.custom_api_url_val = default_url
+
         custom_api_key = st.text_input(
             "Custom API Key",
             value=settings.CUSTOM_API_KEY or os.environ.get("CUSTOM_API_KEY", ""),
             type="password",
-            help="API key for custom provider (leave empty if not required)"
+            help="API key for custom provider (leave empty for local Ollama)"
         )
         custom_api_url = st.text_input(
             "Custom API Base URL",
-            value=settings.CUSTOM_API_URL or os.environ.get("CUSTOM_API_URL", "https://api.groq.com/openai/v1"),
-            help="OpenAI-compatible base URL (e.g. https://api.groq.com/openai/v1, https://openrouter.ai/api/v1, http://localhost:11434/v1)"
+            value=st.session_state.custom_api_url_val,
+            help="OpenAI-compatible base URL"
         )
 
-        custom_model_presets = [
-            "llama-3.3-70b-versatile",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "mistralai/mistral-7b-instruct:free",
-            "deepseek/deepseek-r1:free",
-            "Custom Model..."
-        ]
         selected_preset = st.selectbox(
             "Model Selection",
-            options=custom_model_presets,
+            options=preset_models,
             index=0,
-            help="Select a free trial model or choose 'Custom Model...' to enter your own."
+            help="Select a model or choose 'Custom Model...' to enter your own."
         )
         if selected_preset == "Custom Model...":
-            custom_model_input = st.text_input("Custom Model ID", value="", placeholder="e.g. meta-llama/llama-3.3-70b-instruct:free")
-            active_model_id = custom_model_input.strip() or "llama-3.3-70b-versatile"
+            custom_model_input = st.text_input("Custom Model ID", value="", placeholder="e.g. llama-3.3-70b-versatile")
+            active_model_id = custom_model_input.strip() or preset_models[0]
         else:
             active_model_id = selected_preset
 
@@ -244,17 +299,35 @@ with st.sidebar:
         value=0.3,
         step=0.05
     )
+    response_length = st.select_slider(
+        "Response Length & Detail Level",
+        options=["Concise", "Balanced", "Detailed / Comprehensive"],
+        value="Balanced",
+        help="Controls how much detail and depth the model outputs in its final response."
+    )
+
+    if response_length == "Concise":
+        default_max_tokens = 400
+        length_guideline = "Format instruction: Keep the final answer concise, direct, and focused on key points in 1-2 brief paragraphs or bullet points."
+    elif response_length == "Detailed / Comprehensive":
+        default_max_tokens = 2048
+        length_guideline = "Format instruction: Provide an in-depth, comprehensive final response with thorough explanations covering all relevant details and sections from the context."
+    else:  # Balanced
+        default_max_tokens = 1024
+        length_guideline = "Format instruction: Provide a balanced, well-structured final answer with clear explanations and necessary context."
+
     research_max_tokens = st.slider(
-        "Research Max Tokens",
-        min_value=100,
-        max_value=1024,
-        value=300,
-        step=50
+        "Max Output Tokens (Length Limit)",
+        min_value=200,
+        max_value=4096,
+        value=default_max_tokens,
+        step=100,
+        help="Maximum tokens allowed for the final response. Set higher (1024-4096) to prevent cutting off long responses mid-sentence."
     )
     custom_instructions = st.text_area(
         "Custom Prompt Instructions",
         value="",
-        placeholder="Optional guidelines for the answer (e.g. Focus on technical specs, keep it concise)"
+        placeholder="Optional guidelines for the answer (e.g. Focus on technical specs, format as a markdown table)"
     )
 
     st.subheader("Verification Agent Options")
@@ -284,6 +357,26 @@ with st.sidebar:
         step=1
     )
 
+    st.subheader("Performance & Speed Tuning")
+    enable_verification = st.checkbox(
+        "Enable Verification Audit",
+        value=True,
+        help="Audits draft answer against context. Uncheck for instant single-pass answers (3x faster)."
+    )
+    enable_relevance_check = st.checkbox(
+        "Enable Relevance Gatekeeper",
+        value=False,
+        help="Filters out off-topic questions. Summary/overview questions and direct keyword matches are automatically approved. Leave unchecked for direct unblocked answers."
+    )
+    max_context_chunks = st.slider(
+        "Max Context Chunks to LLM",
+        min_value=1,
+        max_value=10,
+        value=5,
+        step=1,
+        help="Top retrieved chunks sent to the LLM prompt. Lower numbers = significantly faster responses."
+    )
+
     st.subheader("Cache Management")
     cache_expire_days = st.number_input(
         "Cache Expiration (Days)",
@@ -305,9 +398,9 @@ st.markdown("Multi-agent question answering with hybrid retrieval, relevance che
 
 with st.expander("Document Management", expanded=(st.session_state.retriever is None)):
     st.info(
-        "Setup Note: When processing a PDF for the first time, Docling downloads required "
-        "layout models (~500 MB) from Hugging Face once and permanently caches them in ~/.cache/huggingface. "
-        "Text (.txt) and Markdown (.md) files are read directly without downloading models."
+        "Setup Note: Standard digital PDFs, Text (.txt), and Markdown (.md) files are parsed and indexed instantly. "
+        "Local offline embedding models (~80 MB) download once on first use and permanently cache in ~/.cache/huggingface. "
+        "Scanned image PDFs fall back to Docling OCR if needed."
     )
 
     uploaded_files = st.file_uploader(
@@ -342,7 +435,7 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
                         saved_paths.append(target_path)
 
                     processor = DocumentProcessor(cache_expire_days=int(cache_expire_days))
-                    chunks = processor.process(saved_paths)
+                    chunks = processor.process(saved_paths, progress_callback=lambda msg: status.write(msg))
 
                     if not chunks:
                         status.update(label="Processing failed: No chunks extracted", state="error")
@@ -472,6 +565,30 @@ if st.session_state.processed_files:
 
 st.divider()
 
+col_opt1, col_opt2 = st.columns([3, 1])
+with col_opt1:
+    main_response_length = st.radio(
+        "Select Desired Response Length from LLM (Final Answer):",
+        options=["Concise (Short Summary)", "Balanced (Standard)", "In-Depth (Detailed / Long)"],
+        index=1,
+        horizontal=True,
+        help="Choose how much response you need from the model in its final answer."
+    )
+with col_opt2:
+    main_fast_mode = st.checkbox("Fast Mode (Skip Verification)", value=False, help="Generate answers in 1 step without verification.")
+
+if "Concise" in main_response_length:
+    length_guideline = "Format instruction: Keep the final answer concise, direct, and focused on key points in 1-2 brief paragraphs or bullet points."
+    effective_max_tokens = 400
+elif "In-Depth" in main_response_length:
+    length_guideline = "Format instruction: Provide an in-depth, comprehensive final response with thorough explanations covering all relevant details, nuances, and sections from the context."
+    effective_max_tokens = 2500
+else:
+    length_guideline = "Format instruction: Provide a balanced, well-structured final answer with clear explanations and necessary context."
+    effective_max_tokens = 1024
+
+st.divider()
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
@@ -502,10 +619,12 @@ if user_query:
         with st.chat_message("assistant"):
             with st.status("Analyzing and answering question...", expanded=True) as query_status:
                 try:
-                    clean_api_key = active_api_key.strip() if active_api_key else ("dummy-key" if provider_key == "custom" else "")
-                    clean_api_url = active_api_url.strip() if active_api_url else None
-                    effective_research_model = research_model_id.strip() if research_model_id else active_model_id
-                    effective_verification_model = verification_model_id.strip() if verification_model_id else active_model_id
+                    # Sanitize HTTP headers to remove any non-ascii characters (like zero-width space, non-breaking space)
+                    raw_api_key = active_api_key or ("dummy-key" if provider_key == "custom" else "")
+                    clean_api_key = raw_api_key.encode("ascii", "ignore").decode("ascii").strip()
+                    clean_api_url = active_api_url.encode("ascii", "ignore").decode("ascii").strip() if active_api_url else None
+                    effective_research_model = (research_model_id.strip() if research_model_id else active_model_id).encode("ascii", "ignore").decode("ascii").strip()
+                    effective_verification_model = (verification_model_id.strip() if verification_model_id else active_model_id).encode("ascii", "ignore").decode("ascii").strip()
                     effective_relevance_model = effective_research_model
 
                     # Re-instantiate agents with current UI settings so sidebar changes take effect immediately
@@ -513,7 +632,7 @@ if user_query:
                         provider=provider_key,
                         model_id=effective_research_model,
                         temperature=research_temp,
-                        max_tokens=research_max_tokens,
+                        max_tokens=effective_max_tokens,
                         project_id=active_project_id,
                         api_key=clean_api_key,
                         url=clean_api_url
@@ -545,11 +664,16 @@ if user_query:
                     )
                     st.session_state.workflow = workflow
 
+                    combined_instructions = f"{length_guideline}\n{custom_instructions.strip()}" if custom_instructions.strip() else length_guideline
+
                     pipeline_result = st.session_state.workflow.full_pipeline(
                         question=user_query,
                         retriever=st.session_state.retriever,
-                        custom_instructions=custom_instructions.strip() if custom_instructions else None,
-                        step_callback=lambda msg: query_status.write(msg)
+                        custom_instructions=combined_instructions,
+                        step_callback=lambda msg: query_status.write(msg),
+                        enable_verification=(not main_fast_mode and enable_verification),
+                        enable_relevance_check=enable_relevance_check,
+                        max_context_chunks=max_context_chunks
                     )
 
                     answer = pipeline_result.get("draft_answer", "No answer generated.")
@@ -557,27 +681,6 @@ if user_query:
                     sources = pipeline_result.get("retrieved_documents", [])
 
                     query_status.update(label="Complete", state="complete", expanded=False)
-
-                    st.write(answer)
-
-                    if report:
-                        with st.expander("Verification Report"):
-                            st.markdown(report)
-
-                    if sources:
-                        with st.expander("Retrieved Sources"):
-                            for idx, doc in enumerate(sources):
-                                source_name = doc.metadata.get("source", "Unknown")
-                                st.markdown(f"**Chunk {idx + 1} | Source: {source_name}**")
-                                st.text(doc.page_content)
-                                st.divider()
-
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "verification_report": report,
-                        "retrieved_sources": sources
-                    })
 
                 except Exception as e:
                     logger.error(f"Error answering query: {e}")
@@ -588,3 +691,28 @@ if user_query:
                         "role": "assistant",
                         "content": error_msg
                     })
+                    st.stop()
+
+            # Render answer and audits directly into the chat bubble, fully visible on screen
+            st.write(answer)
+            word_count = len(answer.split())
+            st.caption(f"Response details: {word_count} words | Level: {main_response_length}")
+
+            if report:
+                with st.expander("Verification Report"):
+                    st.markdown(report)
+
+            if sources:
+                with st.expander("Retrieved Sources"):
+                    for idx, doc in enumerate(sources):
+                        source_name = doc.metadata.get("source", "Unknown")
+                        st.markdown(f"**Chunk {idx + 1} | Source: {source_name}**")
+                        st.text(doc.page_content)
+                        st.divider()
+
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": answer,
+                "verification_report": report,
+                "retrieved_sources": sources
+            })

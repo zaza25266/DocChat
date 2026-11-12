@@ -127,7 +127,7 @@ The lifecycle of a question in DocChat proceeds through five distinct stages:
 ### 1. Document Processing and Caching
 Located in `document_processor/file_handler.py`.
 
-- **Docling Conversion**: Standard text extractors often lose tables, reading order, and document hierarchies. IBM Docling preserves tables, headings, and formatting by converting documents into unified Markdown. On its first execution on a PDF, Docling automatically downloads its layout analysis and table recognition models (~500 MB) from Hugging Face. These weights are permanently cached in `~/.cache/huggingface/hub/` on your computer, meaning future executions run entirely offline without re-downloading.
+- **Fast PDF and Document Processing**: Digital PDFs are parsed directly with sub-second text extraction and split along page and section headers. Scanned image PDFs automatically fall back to IBM Docling's OCR and layout models.
 - **Direct Text/Markdown Ingestion**: For `.txt` and `.md` files, DocChat reads the text directly and applies header splitting, bypassing heavy neural models for maximum speed.
 - **Markdown Header Splitting**: Rather than cutting text arbitrarily at a fixed character count (which can split sentences or tables in half), `MarkdownHeaderTextSplitter` splits text along logical heading boundaries (`#` and `##`), ensuring each chunk maintains semantic coherence.
 - **Content Hash Caching**: Repeatedly parsing large documents is computationally expensive. DocChat computes a SHA-256 hash of the binary file content:
@@ -195,6 +195,9 @@ DocChat exposes configurable options directly within the Streamlit sidebar, allo
 | **Verification Model ID** | Selected Model | Model ID used by the Verification Agent for consistency auditing | Uses the selected custom/preset model by default; can be individually customized. |
 | **Verification Temperature** | `0.0` | Randomness in verification auditing | Kept at 0.0 for consistent, reproducible evaluation. |
 | **Max Re-Research Cycles** | `1` | Maximum retry attempts if verification fails | Prevents infinite loops while allowing self-correction. |
+| **Enable Verification Audit** | `True` | Toggle multi-agent factual consistency check | Disable for Fast Mode (single-pass generation, ~3x faster responses). |
+| **Enable Relevance Gatekeeper** | `True` | Toggle relevance screening before synthesis | Prevents hallucinating on unrelated topics; auto-passes overview/summary queries. |
+| **Max Context Chunks to LLM** | `5` | Top chunks sent into the LLM context prompt | Controls prompt token volume; lower values (3-5) dramatically accelerate answer generation. |
 | **Custom Prompt Instructions** | `""` | User-defined constraints for generation | Inject guidelines such as "Focus on numeric metrics" or "Format as bullet points". |
 | **Cache Expiration (Days)** | `7` | Time before cached document pickles expire | Controls how long processed chunks are preserved on disk. |
 
@@ -271,6 +274,28 @@ CHROMA_COLLECTION_NAME=documents
 VECTOR_SEARCH_K=10
 LOG_LEVEL=INFO
 ```
+
+---
+
+## Recommended Free Trial Providers & Models
+
+If you do not have active OpenAI or WatsonX credits, use any of these free trial providers:
+
+| Provider | Base URL | Recommended Models | Notes |
+|---|---|---|---|
+| **Groq (Recommended)** | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile`<br>`llama-3.1-8b-instant` | **Fastest option** (~500+ tok/s). Free API keys at [console.groq.com](https://console.groq.com). |
+| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-1.5-flash`<br>`gemini-2.0-flash-exp` | Stable official models. Free API keys at [aistudio.google.com](https://aistudio.google.com). |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | `meta-llama/llama-3.3-70b-instruct:free`<br>`mistralai/mistral-7b-instruct:free` | Free tier models available at [openrouter.ai](https://openrouter.ai). |
+| **Ollama (100% Local)** | `http://localhost:11434/v1` | `llama3.2`, `mistral`, `qwen2.5` | Completely offline, private, zero cost, no API key needed. |
+
+> [!TIP]
+> **Why was the app slow previously?**
+> A full multi-agent RAG pipeline runs 3 sequential LLM calls per query: (1) Relevance Gatekeeper, (2) Research Agent, and (3) Verification Agent. If sending 10-15 full chunks to slow remote endpoints, this can take 15-30 seconds.
+> **How to make it blazing fast:**
+> 1. Use **Groq** (`llama-3.3-70b-versatile` or `llama-3.1-8b-instant`).
+> 2. Keep **Local Offline Embeddings** (`sentence-transformers/all-MiniLM-L6-v2`) selected.
+> 3. Set **Max Context Chunks to LLM** to `4` or `5`.
+> 4. For instant answers, uncheck **Enable Verification Audit** (switches to single-pass Fast Mode).
 
 ---
 

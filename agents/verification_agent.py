@@ -21,20 +21,22 @@ class VerificationAgent:
 
         if self.provider in ("openai", "custom", "custom api"):
             from langchain_openai import ChatOpenAI
-            target_model = model_id or "gpt-4o-mini"
-            target_key = (
+            target_model = (model_id or "gpt-4o-mini").encode("ascii", "ignore").decode("ascii").strip()
+            raw_key = (
                 api_key
                 or (getattr(settings, "CUSTOM_API_KEY", "") if self.provider in ("custom", "custom api") else "")
                 or getattr(settings, "OPENAI_API_KEY", "")
                 or os.environ.get("CUSTOM_API_KEY", "")
                 or os.environ.get("OPENAI_API_KEY", "")
-            ).strip()
-            target_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
+            )
+            target_key = raw_key.encode("ascii", "ignore").decode("ascii").strip() if raw_key else "dummy-key"
+            raw_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
+            target_url = raw_url.encode("ascii", "ignore").decode("ascii").strip() if raw_url else ""
             init_kwargs = {
                 "model": target_model,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                "api_key": target_key or "dummy-key"
+                "api_key": target_key
             }
             if target_url:
                 init_kwargs["base_url"] = target_url
@@ -69,28 +71,28 @@ class VerificationAgent:
     def sanitize_response(self, response_text: str) -> str:
         return response_text.strip()
 
-    def generate_prompt(self, answer: str, context: str) -> str:
-        return f"""You are an AI assistant designed to verify the accuracy and relevance of answers based on provided context.
+    def generate_prompt(self, answer: str, context: str, question: Optional[str] = None) -> str:
+        q_section = f"**User Question:** {question}\n" if question else ""
+        return f"""You are an AI assistant designed to verify the accuracy and factual grounding of answers based on provided document context.
 
 **Instructions:**
-- Verify the following answer against the provided context.
+- Verify the following answer against the provided context{' and user question' if question else ''}.
 - Check for:
-1. Direct/indirect factual support (YES/NO)
-2. Unsupported claims (list any if present)
-3. Contradictions (list any if present)
-4. Relevance to the question (YES/NO)
-- Provide additional details or explanations where relevant.
-- Respond in the exact format specified below without adding any unrelated information.
+1. Direct factual support (YES/NO): Are claims explicitly backed by the context?
+2. Unsupported claims or speculation: List any strategies, assumptions, or claims NOT in the context.
+3. Contradictions: List any contradictions against the context.
+4. Relevance to the question (YES/NO): If the answer invents speculation for a question not covered in the text, mark Supported: NO.
+- Format your response exactly as specified below:
 
 **Format:**
 Supported: YES/NO
-Unsupported Claims: [item1, item2, ...]
-Contradictions: [item1, item2, ...]
+Unsupported Claims: [list items or "None"]
+Contradictions: [list items or "None"]
 Relevant: YES/NO
-Additional Details: [Any extra information or explanations]
+Additional Details: [Brief explanation]
 
-**Answer:** {answer}
-**Context:**
+{q_section}**Answer to Verify:** {answer}
+**Document Context:**
 {context}
 
 **Respond ONLY with the above format.**"""
@@ -102,32 +104,32 @@ Additional Details: [Any extra information or explanations]
             for line in lines:
                 if ":" in line:
                     key, value = line.split(":", 1)
-                    key = key.strip().lower()
-                    value = value.strip()
+                    clean_key = key.strip().strip("*-# ").lower()
+                    clean_val = value.strip().strip("*-# ")
 
-                    if key == "supported":
-                        verification["Supported"] = "YES" if "YES" in value.upper() else "NO"
-                    elif key == "relevant":
-                        verification["Relevant"] = "YES" if "YES" in value.upper() else "NO"
-                    elif key in ("unsupported claims", "unsupported_claims"):
-                        if value.startswith("[") and value.endswith("]"):
-                            items = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+                    if clean_key == "supported":
+                        verification["Supported"] = "YES" if "YES" in clean_val.upper() else "NO"
+                    elif clean_key == "relevant":
+                        verification["Relevant"] = "YES" if "YES" in clean_val.upper() else "NO"
+                    elif clean_key in ("unsupported claims", "unsupported_claims"):
+                        if clean_val.startswith("[") and clean_val.endswith("]"):
+                            items = [item.strip().strip("\"'") for item in clean_val[1:-1].split(",") if item.strip()]
                             verification["Unsupported Claims"] = items
                         else:
-                            verification["Unsupported Claims"] = [] if value.lower() in ("none", "[]", "") else [value]
-                    elif key == "contradictions":
-                        if value.startswith("[") and value.endswith("]"):
-                            items = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+                            verification["Unsupported Claims"] = [] if clean_val.lower() in ("none", "[]", "") else [clean_val]
+                    elif clean_key == "contradictions":
+                        if clean_val.startswith("[") and clean_val.endswith("]"):
+                            items = [item.strip().strip("\"'") for item in clean_val[1:-1].split(",") if item.strip()]
                             verification["Contradictions"] = items
                         else:
-                            verification["Contradictions"] = [] if value.lower() in ("none", "[]", "") else [value]
-                    elif key in ("additional details", "additional_details"):
-                        verification["Additional Details"] = value
+                            verification["Contradictions"] = [] if clean_val.lower() in ("none", "[]", "") else [clean_val]
+                    elif clean_key in ("additional details", "additional_details"):
+                        verification["Additional Details"] = clean_val
 
             if "Supported" not in verification:
-                verification["Supported"] = "NO"
+                verification["Supported"] = "YES" if "SUPPORTED: YES" in response_text.upper() else "NO"
             if "Relevant" not in verification:
-                verification["Relevant"] = "NO"
+                verification["Relevant"] = "YES" if "RELEVANT: YES" in response_text.upper() else "NO"
             if "Unsupported Claims" not in verification:
                 verification["Unsupported Claims"] = []
             if "Contradictions" not in verification:
@@ -159,9 +161,9 @@ Additional Details: [Any extra information or explanations]
             f"**Additional Details:** {details_text}"
         )
 
-    def check(self, answer: str, documents: List[Document]) -> Dict:
+    def check(self, answer: str, documents: List[Document], question: Optional[str] = None) -> Dict:
         context = "\n\n".join([doc.page_content for doc in documents])
-        prompt = self.generate_prompt(answer, context)
+        prompt = self.generate_prompt(answer, context, question=question)
 
         try:
             if self.provider in ("openai", "custom", "custom api"):
