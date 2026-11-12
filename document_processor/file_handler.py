@@ -1,7 +1,7 @@
-
 import os
 import hashlib
 import pickle
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
@@ -12,40 +12,67 @@ from config.settings import settings
 from utils.logging import logger
 
 class DocumentProcessor:
-    def __init__(self):
-        self.headers = [("#", "Header 1"), ("##", "Header 2")]
+    def __init__(self, headers: List = None, cache_expire_days: int = None):
+        self.headers = headers or [("#", "Header 1"), ("##", "Header 2")]
+        self.cache_expire_days = cache_expire_days or settings.CACHE_EXPIRE_DAYS
         self.cache_dir = Path(settings.CACHE_DIR)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
     
     def validate_files(self, files: List) -> None:
-        """Validate the total size of the uploaded files."""
-        total_size = sum(os.path.getsize(f.name) for f in files)
+        total_size = 0
+        for f in files:
+            if hasattr(f, "size"):
+                total_size += f.size
+            elif hasattr(f, "name") and os.path.exists(f.name):
+                total_size += os.path.getsize(f.name)
+            elif isinstance(f, (str, Path)) and os.path.exists(f):
+                total_size += os.path.getsize(f)
         if total_size > constants.MAX_TOTAL_SIZE:
-            raise ValueError(f"Total size exceeds {constants.MAX_TOTAL_SIZE//1024//1024}MB limit")
+            raise ValueError(f"Total size exceeds {constants.MAX_TOTAL_SIZE // 1024 // 1024}MB limit")
     
     def process(self, files: List) -> List:
-        """Process files with caching for subsequent queries"""
         self.validate_files(files)
         all_chunks = []
         seen_hashes = set()
         
         for file in files:
+            temp_path = None
             try:
-                # Generate content-based hash for caching
-                with open(file.name, "rb") as f:
-                    file_hash = self._generate_hash(f.read())
-                
-                cache_path = self.cache_dir / f"{file_hash}.pkl"
-                
-                if self._is_cache_valid(cache_path):
-                    logger.info(f"Loading from cache: {file.name}")
-                    chunks = self._load_from_cache(cache_path)
+                # Handle file-like objects or direct paths
+                if hasattr(file, "read"):
+                    content = file.read()
+                    if hasattr(file, "seek"):
+                        file.seek(0)
+                    filename = getattr(file, "name", "document")
+                    file_hash = self._generate_hash(content)
+                    cache_path = self.cache_dir / f"{file_hash}.pkl"
+                    
+                    if self._is_cache_valid(cache_path):
+                        logger.info(f"Loading from cache: {filename}")
+                        chunks = self._load_from_cache(cache_path)
+                    else:
+                        logger.info(f"Processing and caching: {filename}")
+                        suffix = Path(filename).suffix or ".txt"
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(content)
+                            temp_path = tmp.name
+                        chunks = self._process_path(temp_path, filename)
+                        self._save_to_cache(chunks, cache_path)
                 else:
-                    logger.info(f"Processing and caching: {file.name}")
-                    chunks = self._process_file(file)
-                    self._save_to_cache(chunks, cache_path)
+                    path_str = str(file.name if hasattr(file, "name") else file)
+                    filename = Path(path_str).name
+                    with open(path_str, "rb") as f:
+                        file_hash = self._generate_hash(f.read())
+                    cache_path = self.cache_dir / f"{file_hash}.pkl"
+                    
+                    if self._is_cache_valid(cache_path):
+                        logger.info(f"Loading from cache: {filename}")
+                        chunks = self._load_from_cache(cache_path)
+                    else:
+                        logger.info(f"Processing and caching: {filename}")
+                        chunks = self._process_path(path_str, filename)
+                        self._save_to_cache(chunks, cache_path)
                 
-                # Deduplicate chunks across files
                 for chunk in chunks:
                     chunk_hash = self._generate_hash(chunk.page_content.encode())
                     if chunk_hash not in seen_hashes:
@@ -53,20 +80,25 @@ class DocumentProcessor:
                         seen_hashes.add(chunk_hash)
                         
             except Exception as e:
-                logger.error(f"Failed to process {file.name}: {str(e)}")
+                logger.error(f"Failed to process {getattr(file, 'name', file)}: {str(e)}")
                 continue
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
                 
         logger.info(f"Total unique chunks: {len(all_chunks)}")
         return all_chunks
     
-    def _process_file(self, file) -> List:
-        """Original processing logic with Docling"""
-        if not file.name.endswith(('.pdf', '.docx', '.txt', '.md')):
-            logger.warning(f"Skipping unsupported file type: {file.name}")
+    def _process_path(self, file_path: str, filename: str) -> List:
+        if not filename.lower().endswith(('.pdf', '.docx', '.txt', '.md')):
+            logger.warning(f"Skipping unsupported file type: {filename}")
             return []
 
         converter = DocumentConverter()
-        markdown = converter.convert(file.name).document.export_to_markdown()
+        markdown = converter.convert(file_path).document.export_to_markdown()
         splitter = MarkdownHeaderTextSplitter(self.headers)
         return splitter.split_text(markdown)
     
@@ -90,6 +122,4 @@ class DocumentProcessor:
             return False
             
         cache_age = datetime.now() - datetime.fromtimestamp(cache_path.stat().st_mtime)
-        return cache_age < timedelta(days=settings.CACHE_EXPIRE_DAYS)
-    
-
+        return cache_age < timedelta(days=self.cache_expire_days)
