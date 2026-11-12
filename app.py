@@ -40,13 +40,13 @@ with st.sidebar:
     st.subheader("Model Provider")
     provider_choice = st.radio(
         "Choose AI Service Provider",
-        options=["WatsonX AI", "OpenAI"],
+        options=["WatsonX AI", "OpenAI", "Custom API (OpenAI-Compatible)"],
         index=0,
-        help="Select whether to use IBM WatsonX or OpenAI for embeddings and agent reasoning."
+        help="Select whether to use IBM WatsonX, OpenAI, or a Custom OpenAI-compatible API for embeddings and agent reasoning."
     )
-    provider_key = "watsonx" if provider_choice == "WatsonX AI" else "openai"
 
-    if provider_key == "watsonx":
+    if provider_choice == "WatsonX AI":
+        provider_key = "watsonx"
         st.subheader("WatsonX Settings")
         watson_api_key = st.text_input(
             "WatsonX API Key",
@@ -59,11 +59,43 @@ with st.sidebar:
             value=settings.WATSONX_PROJECT_ID or "skills-network",
             help="Use your WatsonX Project GUID if using a personal IBM Cloud account"
         )
-        research_model_default = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
-        verification_model_default = "ibm/granite-4-h-small"
+        watson_url = st.text_input(
+            "WatsonX API URL",
+            value=settings.WATSONX_URL or "https://us-south.ml.cloud.ibm.com",
+            help="WatsonX instance URL"
+        )
+
+        watson_model_presets = [
+            "ibm/granite-3-8b-instruct",
+            "meta-llama/llama-3-8b-instruct",
+            "meta-llama/llama-3-3-70b-instruct",
+            "ibm/granite-13b-chat-v2",
+            "ibm/granite-4-h-small",
+            "Custom Model..."
+        ]
+        selected_preset = st.selectbox(
+            "Model Selection",
+            options=watson_model_presets,
+            index=0,
+            help="Select a standard/trial model or choose 'Custom Model...' to enter your own."
+        )
+        if selected_preset == "Custom Model...":
+            custom_model_input = st.text_input("Custom Model ID", value="", placeholder="e.g. ibm/granite-3-8b-instruct")
+            active_model_id = custom_model_input.strip() or "ibm/granite-3-8b-instruct"
+        else:
+            active_model_id = selected_preset
+
+        embedding_model_id = st.text_input(
+            "Embedding Model ID",
+            value="ibm/granite-embedding-278m-multilingual",
+            help="WatsonX embedding model for vector indexing"
+        )
         active_api_key = watson_api_key
         active_project_id = watson_project_id
-    else:
+        active_api_url = watson_url
+
+    elif provider_choice == "OpenAI":
+        provider_key = "openai"
         st.subheader("OpenAI Settings")
         openai_api_key = st.text_input(
             "OpenAI API Key",
@@ -71,10 +103,84 @@ with st.sidebar:
             type="password",
             help="OpenAI API key (sk-...)"
         )
-        research_model_default = "gpt-4o-mini"
-        verification_model_default = "gpt-4o-mini"
+        openai_base_url = st.text_input(
+            "API Base URL",
+            value=settings.OPENAI_BASE_URL or "https://api.openai.com/v1",
+            help="OpenAI API Base URL (or custom proxy/gateway)"
+        )
+
+        openai_model_presets = [
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-3.5-turbo",
+            "Custom Model..."
+        ]
+        selected_preset = st.selectbox(
+            "Model Selection",
+            options=openai_model_presets,
+            index=0,
+            help="Select a standard/trial model or choose 'Custom Model...' to enter your own."
+        )
+        if selected_preset == "Custom Model...":
+            custom_model_input = st.text_input("Custom Model ID", value="", placeholder="e.g. gpt-4o-mini")
+            active_model_id = custom_model_input.strip() or "gpt-4o-mini"
+        else:
+            active_model_id = selected_preset
+
+        embedding_model_id = st.text_input(
+            "Embedding Model ID",
+            value="text-embedding-3-small",
+            help="OpenAI embedding model for vector indexing"
+        )
         active_api_key = openai_api_key
         active_project_id = None
+        active_api_url = openai_base_url
+
+    else:
+        provider_key = "custom"
+        st.subheader("Custom API Settings")
+        custom_api_key = st.text_input(
+            "Custom API Key",
+            value=settings.CUSTOM_API_KEY or os.environ.get("CUSTOM_API_KEY", ""),
+            type="password",
+            help="API key for custom provider (leave empty if not required)"
+        )
+        custom_api_url = st.text_input(
+            "Custom API Base URL",
+            value=settings.CUSTOM_API_URL or os.environ.get("CUSTOM_API_URL", "https://api.groq.com/openai/v1"),
+            help="OpenAI-compatible base URL (e.g. https://api.groq.com/openai/v1, https://openrouter.ai/api/v1, http://localhost:11434/v1)"
+        )
+
+        custom_model_presets = [
+            "llama-3.3-70b-versatile",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "mistralai/mistral-7b-instruct:free",
+            "deepseek/deepseek-r1:free",
+            "Custom Model..."
+        ]
+        selected_preset = st.selectbox(
+            "Model Selection",
+            options=custom_model_presets,
+            index=0,
+            help="Select a free trial model or choose 'Custom Model...' to enter your own."
+        )
+        if selected_preset == "Custom Model...":
+            custom_model_input = st.text_input("Custom Model ID", value="", placeholder="e.g. meta-llama/llama-3.3-70b-instruct:free")
+            active_model_id = custom_model_input.strip() or "llama-3.3-70b-versatile"
+        else:
+            active_model_id = selected_preset
+
+        embedding_model_id = st.text_input(
+            "Embedding Model ID",
+            value="text-embedding-3-small",
+            help="Embedding model supported by your custom API or endpoint"
+        )
+        active_api_key = custom_api_key
+        active_project_id = None
+        active_api_url = custom_api_url
+
+    research_model_default = active_model_id
+    verification_model_default = active_model_id
 
     st.subheader("Retrieval Options")
     vector_search_k = st.slider(
@@ -192,13 +298,16 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
             with st.status("Processing and indexing documents...", expanded=True) as status:
                 try:
                     clean_api_key = active_api_key.strip() if active_api_key else ""
-                    if not clean_api_key:
+                    clean_api_url = active_api_url.strip() if active_api_url else None
+                    if not clean_api_key and provider_key != "custom":
                         status.update(label="Authentication error: Missing API Key", state="error")
                         st.error(
                             f"Please provide an API key for {provider_choice} in the sidebar configuration "
                             f"(or set it in your .env file) before processing documents."
                         )
                         st.stop()
+                    if not clean_api_key and provider_key == "custom":
+                        clean_api_key = "dummy-key"
 
                     status.write("Step 1: Saving and parsing uploaded files with Docling...")
                     saved_paths = []
@@ -240,6 +349,8 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
                     status.write(f"Step 2: Connecting to {provider_choice} embeddings and creating Chroma vector store...")
                     builder = RetrieverBuilder(
                         provider=provider_key,
+                        model_id=embedding_model_id.strip() if embedding_model_id else None,
+                        url=clean_api_url,
                         project_id=active_project_id,
                         api_key=clean_api_key
                     )
@@ -252,27 +363,35 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
                     )
 
                     status.write(f"Step 4: Connecting to {provider_choice} models and initializing multi-agent workflow...")
+                    effective_research_model = research_model_id.strip() if research_model_id else active_model_id
+                    effective_verification_model = verification_model_id.strip() if verification_model_id else active_model_id
+                    effective_relevance_model = effective_research_model
+
                     researcher = ResearchAgent(
                         provider=provider_key,
-                        model_id=research_model_id,
+                        model_id=effective_research_model,
                         temperature=research_temp,
                         max_tokens=research_max_tokens,
                         project_id=active_project_id,
-                        api_key=clean_api_key
+                        api_key=clean_api_key,
+                        url=clean_api_url
                     )
                     verifier = VerificationAgent(
                         provider=provider_key,
-                        model_id=verification_model_id,
+                        model_id=effective_verification_model,
                         temperature=verification_temp,
                         max_tokens=verification_max_tokens,
                         project_id=active_project_id,
-                        api_key=clean_api_key
+                        api_key=clean_api_key,
+                        url=clean_api_url
                     )
                     relevance_checker = RelevanceChecker(
                         provider=provider_key,
+                        model_id=effective_relevance_model,
                         temperature=0.0,
                         project_id=active_project_id,
-                        api_key=clean_api_key
+                        api_key=clean_api_key,
+                        url=clean_api_url
                     )
 
                     workflow = AgentWorkflow(
@@ -315,7 +434,7 @@ with col1:
 with col2:
     st.metric("Total Extracted Chunks", st.session_state.num_chunks)
 with col3:
-    status_text = f"Active ({provider_choice})" if st.session_state.retriever is not None else "Awaiting Documents"
+    status_text = f"Active ({provider_choice} - {active_model_id})" if st.session_state.retriever is not None else "Awaiting Documents"
     st.metric("Retriever Status", status_text)
 
 if st.session_state.processed_files:
@@ -353,6 +472,49 @@ if user_query:
         with st.chat_message("assistant"):
             with st.status("Analyzing and answering question...", expanded=True) as query_status:
                 try:
+                    clean_api_key = active_api_key.strip() if active_api_key else ("dummy-key" if provider_key == "custom" else "")
+                    clean_api_url = active_api_url.strip() if active_api_url else None
+                    effective_research_model = research_model_id.strip() if research_model_id else active_model_id
+                    effective_verification_model = verification_model_id.strip() if verification_model_id else active_model_id
+                    effective_relevance_model = effective_research_model
+
+                    # Re-instantiate agents with current UI settings so sidebar changes take effect immediately
+                    researcher = ResearchAgent(
+                        provider=provider_key,
+                        model_id=effective_research_model,
+                        temperature=research_temp,
+                        max_tokens=research_max_tokens,
+                        project_id=active_project_id,
+                        api_key=clean_api_key,
+                        url=clean_api_url
+                    )
+                    verifier = VerificationAgent(
+                        provider=provider_key,
+                        model_id=effective_verification_model,
+                        temperature=verification_temp,
+                        max_tokens=verification_max_tokens,
+                        project_id=active_project_id,
+                        api_key=clean_api_key,
+                        url=clean_api_url
+                    )
+                    relevance_checker = RelevanceChecker(
+                        provider=provider_key,
+                        model_id=effective_relevance_model,
+                        temperature=0.0,
+                        project_id=active_project_id,
+                        api_key=clean_api_key,
+                        url=clean_api_url
+                    )
+
+                    workflow = AgentWorkflow(
+                        researcher=researcher,
+                        verifier=verifier,
+                        relevance_checker=relevance_checker,
+                        max_re_research_cycles=max_re_research_cycles,
+                        relevance_k=relevance_eval_k
+                    )
+                    st.session_state.workflow = workflow
+
                     pipeline_result = st.session_state.workflow.full_pipeline(
                         question=user_query,
                         retriever=st.session_state.retriever,

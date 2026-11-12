@@ -19,17 +19,27 @@ class VerificationAgent:
     ):
         self.provider = provider.lower()
 
-        if self.provider == "openai":
+        if self.provider in ("openai", "custom", "custom api"):
             from langchain_openai import ChatOpenAI
             target_model = model_id or "gpt-4o-mini"
-            target_key = (api_key or getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")).strip()
-            self.model = ChatOpenAI(
-                model=target_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                api_key=target_key
-            )
-            logger.info(f"VerificationAgent initialized with OpenAI model '{target_model}'.")
+            target_key = (
+                api_key
+                or (getattr(settings, "CUSTOM_API_KEY", "") if self.provider in ("custom", "custom api") else "")
+                or getattr(settings, "OPENAI_API_KEY", "")
+                or os.environ.get("CUSTOM_API_KEY", "")
+                or os.environ.get("OPENAI_API_KEY", "")
+            ).strip()
+            target_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
+            init_kwargs = {
+                "model": target_model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "api_key": target_key or "dummy-key"
+            }
+            if target_url:
+                init_kwargs["base_url"] = target_url
+            self.model = ChatOpenAI(**init_kwargs)
+            logger.info(f"VerificationAgent initialized with {self.provider} model '{target_model}' (base_url: {target_url or 'default'}).")
         else:
             from ibm_watsonx_ai.foundation_models import ModelInference
             from ibm_watsonx_ai import Credentials, APIClient
@@ -154,7 +164,7 @@ Additional Details: [Any extra information or explanations]
         prompt = self.generate_prompt(answer, context)
 
         try:
-            if self.provider == "openai":
+            if self.provider in ("openai", "custom", "custom api"):
                 response = self.model.invoke([{"role": "user", "content": prompt}])
                 llm_response = str(response.content).strip()
             else:

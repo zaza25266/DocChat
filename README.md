@@ -36,7 +36,7 @@ Standard LLM applications often suffer from hallucinations—fabricating facts w
 The system consists of three distinct subsystems:
 
 1. **Ingestion Subsystem**: Ingests heterogeneous files (PDF, DOCX, TXT, Markdown), converts them into clean structured Markdown using IBM Docling, partitions text into hierarchical sections, and stores content hashes for rapid disk-cached retrieval.
-2. **Retrieval Subsystem**: Creates an ensemble search index combining lexical keyword matching (BM25) and dense semantic vector similarity (ChromaDB + WatsonX Granite embeddings).
+2. **Retrieval Subsystem**: Creates an ensemble search index combining lexical keyword matching (BM25) and dense semantic vector similarity (ChromaDB + embeddings from WatsonX, OpenAI, or custom OpenAI-compatible providers).
 3. **Multi-Agent LangGraph Subsystem**: Executes a state machine consisting of Relevance Checking, Research Generation, and Verification Fact-Checking.
 
 ```
@@ -110,12 +110,12 @@ The lifecycle of a question in DocChat proceeds through five distinct stages:
 
 1. **File Upload**: The user uploads one or more reference files via the Streamlit interface. Files are saved locally to `temp_uploads/`.
 2. **Parsing and Chunking**: `DocumentProcessor` calculates the SHA-256 hash of each file. If a cache entry exists in `document_cache/`, chunks are loaded immediately. Otherwise, Docling parses the document structure into Markdown, and `MarkdownHeaderTextSplitter` partitions the text based on `#` and `##` headings.
-3. **Indexing**: `RetrieverBuilder` generates embeddings using `ibm/granite-embedding-278m-multilingual`, loads the chunk representations into ChromaDB, constructs a BM25 index, and joins them using LangChain's `EnsembleRetriever`.
+3. **Indexing**: `RetrieverBuilder` generates embeddings using the configured embedding model (e.g. `ibm/granite-embedding-278m-multilingual`, `text-embedding-3-small`, or custom), loads the chunk representations into ChromaDB, constructs a BM25 index, and joins them using LangChain's `EnsembleRetriever`.
 4. **Agent Workflow Execution**:
    - The user inputs a query.
    - `EnsembleRetriever` fetches the top candidate chunks.
-   - **Relevance Checker**: Evaluates whether the retrieved context contains relevant information. If classified as `NO_MATCH`, processing stops, informing the user that the query cannot be answered from the document.
-   - **Research Agent**: If relevant, the research agent compiles the passages and user instructions into a focused prompt and invokes the generation LLM (e.g., LLaMA-4 or Granite).
+   - **Relevance Checker**: Evaluates whether the retrieved context contains relevant information using the configured model. If classified as `NO_MATCH`, processing stops, informing the user that the query cannot be answered from the document.
+   - **Research Agent**: If relevant, the research agent compiles the passages and user instructions into a focused prompt and invokes the generation LLM (e.g. your selected model or custom free trial model).
    - **Verification Agent**: Receives the drafted response and the source passages, checking for direct support, unsupported claims, contradictions, and overall relevance.
    - If the verification report indicates unsupported claims or contradictions, and the retry limit has not been reached, the state transitions back to the research node.
 5. **UI Rendering**: Streamlit renders the generated answer, an expandable Verification Report detailing the factual consistency audit, and an expandable Retrieved Sources view showing the exact document passages used.
@@ -142,8 +142,8 @@ Hybrid search combines the strengths of two complementary information retrieval 
 - **Lexical Search (BM25)**:
   - Works through exact token matching, term frequency, and inverse document frequency.
   - Highly effective for technical keywords, serial numbers, product codes, abbreviations, and rare proper nouns that dense embedding models might dilute.
-- **Dense Vector Search (ChromaDB + WatsonX Embeddings)**:
-  - Converts text chunks into mathematical vectors in a continuous geometric space.
+- **Dense Vector Search (ChromaDB + Embeddings)**:
+  - Converts text chunks into mathematical vectors in a continuous geometric space using WatsonX, OpenAI, or custom embeddings.
   - Effective for conceptual understanding, synonyms, and paraphrasing where the user's phrasing differs from the document's vocabulary.
 - **Ensemble Fusion**:
   - LangChain's `EnsembleRetriever` normalizes the rank scores of both retrievers using reciprocal rank weighting.
@@ -179,14 +179,18 @@ DocChat exposes configurable options directly within the Streamlit sidebar, allo
 
 | Parameter | Default | Description | Impact of Modification |
 |---|---|---|---|
+| **AI Service Provider** | `WatsonX AI` | Choose between WatsonX AI, OpenAI, or Custom API (OpenAI-Compatible) | Selects the active backend service for embeddings and reasoning agents. |
+| **API Base URL / Endpoint** | Provider default | Custom API endpoint or proxy URL | Allows pointing to alternative WatsonX regions, OpenAI proxies, or OpenAI-compatible trial services (e.g., Groq, OpenRouter, Ollama). |
+| **Model Selection** | First preset | Preset dropdown with a "Custom Model..." write-in option | Choose from popular models or enter any custom / free trial model ID available on your account. |
+| **Embedding Model ID** | `ibm/granite-embedding-278m-multilingual` / `text-embedding-3-small` | Model used for semantic vector indexing | Determines the embedding representation for Chroma vector search. |
 | **Retrieved Chunks (k)** | `10` | Number of candidate chunks returned by the retriever | Higher values provide broader context but may introduce irrelevant noise or exceed token limits. |
 | **BM25 Keyword Weight** | `0.4` | Weight given to lexical keyword retrieval | Increase when working with code, IDs, technical specs, or strict keyword queries. |
 | **Vector Semantic Weight** | `0.6` | Weight given to dense semantic embedding retrieval | Increase when queries involve conceptual reasoning, paraphrasing, or abstract questions. |
 | **Relevance Evaluation Chunks** | `5` | Number of top passages evaluated by the Relevance Checker | Controls how much context the relevance classifier reads before making a decision. |
-| **Research Model ID** | `meta-llama/llama-4-maverick-17b-128e-instruct-fp8` | WatsonX Foundation Model used for answer drafting | Determines reasoning power and synthesis capability. |
+| **Research Model ID** | Selected Model | Model ID used by the Research Agent for answer drafting | Uses the selected custom/preset model by default; can be individually customized. |
 | **Research Temperature** | `0.3` | Randomness in research generation | Lower values (0.0 - 0.3) yield deterministic, factual output. Higher values increase variability. |
 | **Research Max Tokens** | `300` | Maximum token length for the draft answer | Controls the maximum length of generated answers. |
-| **Verification Model ID** | `ibm/granite-4-h-small` | Foundation Model used for verification auditing | Smaller, fast models perform classification and fact checking efficiently. |
+| **Verification Model ID** | Selected Model | Model ID used by the Verification Agent for consistency auditing | Uses the selected custom/preset model by default; can be individually customized. |
 | **Verification Temperature** | `0.0` | Randomness in verification auditing | Kept at 0.0 for consistent, reproducible evaluation. |
 | **Max Re-Research Cycles** | `1` | Maximum retry attempts if verification fails | Prevents infinite loops while allowing self-correction. |
 | **Custom Prompt Instructions** | `""` | User-defined constraints for generation | Inject guidelines such as "Focus on numeric metrics" or "Format as bullet points". |
@@ -246,13 +250,18 @@ cp .env.example .env
 ```
 Open `.env` in an editor and set your credentials:
 ```env
-# Optional WatsonX API Key (can also be entered in the UI)
+# Optional WatsonX Settings (can also be entered in the UI)
 WATSONX_APIKEY=your_watsonx_api_key_here
 WATSONX_PROJECT_ID=skills-network
 WATSONX_URL=https://us-south.ml.cloud.ibm.com
 
-# Optional OpenAI API Key (if using OpenAI models)
+# Optional OpenAI Settings
 OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+
+# Optional Custom API Settings (e.g. Groq, OpenRouter, Together, Ollama)
+CUSTOM_API_KEY=your_custom_api_key_here
+CUSTOM_API_URL=https://api.groq.com/openai/v1
 
 # Storage and Retrieval defaults
 CHROMA_DB_PATH=./chroma_db

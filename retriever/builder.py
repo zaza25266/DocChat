@@ -20,15 +20,25 @@ class RetrieverBuilder:
     ):
         self.provider = provider.lower()
 
-        if self.provider == "openai":
+        if self.provider in ("openai", "custom", "custom api"):
             from langchain_openai import OpenAIEmbeddings
-            emb_model = model_id if (model_id and "embedding" in model_id) else "text-embedding-3-small"
-            target_api_key = (api_key or getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")).strip()
-            self.embeddings = OpenAIEmbeddings(
-                model=emb_model,
-                api_key=target_api_key
-            )
-            logger.info(f"Initialized OpenAI embeddings with model '{emb_model}'.")
+            emb_model = model_id or "text-embedding-3-small"
+            target_api_key = (
+                api_key
+                or (getattr(settings, "CUSTOM_API_KEY", "") if self.provider in ("custom", "custom api") else "")
+                or getattr(settings, "OPENAI_API_KEY", "")
+                or os.environ.get("CUSTOM_API_KEY", "")
+                or os.environ.get("OPENAI_API_KEY", "")
+            ).strip()
+            init_kwargs = {
+                "model": emb_model,
+                "api_key": target_api_key or "dummy-key"
+            }
+            target_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
+            if target_url:
+                init_kwargs["base_url"] = target_url
+            self.embeddings = OpenAIEmbeddings(**init_kwargs)
+            logger.info(f"Initialized {self.provider} embeddings with model '{emb_model}' (base_url: {target_url or 'default'}).")
         else:
             from ibm_watsonx_ai.metanames import EmbedTextParamsMetaNames
             from langchain_ibm import WatsonxEmbeddings

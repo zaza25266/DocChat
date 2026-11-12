@@ -17,22 +17,32 @@ class ResearchAgent:
     ):
         self.provider = provider.lower()
 
-        if self.provider == "openai":
+        if self.provider in ("openai", "custom", "custom api"):
             from langchain_openai import ChatOpenAI
             target_model = model_id or "gpt-4o-mini"
-            target_key = (api_key or getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")).strip()
-            self.model = ChatOpenAI(
-                model=target_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                api_key=target_key
-            )
-            logger.info(f"ResearchAgent initialized with OpenAI model '{target_model}'.")
+            target_key = (
+                api_key
+                or (getattr(settings, "CUSTOM_API_KEY", "") if self.provider in ("custom", "custom api") else "")
+                or getattr(settings, "OPENAI_API_KEY", "")
+                or os.environ.get("CUSTOM_API_KEY", "")
+                or os.environ.get("OPENAI_API_KEY", "")
+            ).strip()
+            target_url = url or (getattr(settings, "CUSTOM_API_URL", "") if self.provider in ("custom", "custom api") else getattr(settings, "OPENAI_BASE_URL", ""))
+            init_kwargs = {
+                "model": target_model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "api_key": target_key or "dummy-key"
+            }
+            if target_url:
+                init_kwargs["base_url"] = target_url
+            self.model = ChatOpenAI(**init_kwargs)
+            logger.info(f"ResearchAgent initialized with {self.provider} model '{target_model}' (base_url: {target_url or 'default'}).")
         else:
             from ibm_watsonx_ai.foundation_models import ModelInference
             from ibm_watsonx_ai import Credentials, APIClient
 
-            target_model = model_id or "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
+            target_model = model_id or "ibm/granite-3-8b-instruct"
             target_url = url or getattr(settings, "WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
             target_project_id = project_id or getattr(settings, "WATSONX_PROJECT_ID", "skills-network")
             target_key = (api_key or getattr(settings, "WATSONX_APIKEY", "") or os.environ.get("WATSONX_APIKEY", "")).strip()
@@ -86,7 +96,7 @@ class ResearchAgent:
         prompt = self.generate_prompt(question, context, custom_instructions=custom_instructions)
 
         try:
-            if self.provider == "openai":
+            if self.provider in ("openai", "custom", "custom api"):
                 response = self.model.invoke([{"role": "user", "content": prompt}])
                 llm_response = str(response.content).strip()
             else:

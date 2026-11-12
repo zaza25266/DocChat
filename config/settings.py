@@ -3,6 +3,10 @@ from .constants import MAX_FILE_SIZE, MAX_TOTAL_SIZE, ALLOWED_TYPES
 
 class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = ""
+
+    CUSTOM_API_KEY: str = ""
+    CUSTOM_API_URL: str = ""
 
     WATSONX_APIKEY: str = ""
     WATSONX_PROJECT_ID: str = "skills-network"
