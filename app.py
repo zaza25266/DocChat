@@ -37,17 +37,44 @@ if "num_chunks" not in st.session_state:
 with st.sidebar:
     st.title("Configuration")
 
-    st.subheader("WatsonX Settings")
-    api_key_input = st.text_input(
-        "WatsonX API Key",
-        value=settings.WATSONX_APIKEY or os.environ.get("WATSONX_APIKEY", ""),
-        type="password",
-        help="Optional if credentials exist in environment"
+    st.subheader("Model Provider")
+    provider_choice = st.radio(
+        "Choose AI Service Provider",
+        options=["WatsonX AI", "OpenAI"],
+        index=0,
+        help="Select whether to use IBM WatsonX or OpenAI for embeddings and agent reasoning."
     )
-    project_id_input = st.text_input(
-        "Project ID",
-        value=settings.WATSONX_PROJECT_ID or "skills-network"
-    )
+    provider_key = "watsonx" if provider_choice == "WatsonX AI" else "openai"
+
+    if provider_key == "watsonx":
+        st.subheader("WatsonX Settings")
+        watson_api_key = st.text_input(
+            "WatsonX API Key",
+            value=settings.WATSONX_APIKEY or os.environ.get("WATSONX_APIKEY", ""),
+            type="password",
+            help="IBM Cloud API key required when running outside of IBM Skills Network"
+        )
+        watson_project_id = st.text_input(
+            "Project ID",
+            value=settings.WATSONX_PROJECT_ID or "skills-network",
+            help="Use your WatsonX Project GUID if using a personal IBM Cloud account"
+        )
+        research_model_default = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
+        verification_model_default = "ibm/granite-4-h-small"
+        active_api_key = watson_api_key
+        active_project_id = watson_project_id
+    else:
+        st.subheader("OpenAI Settings")
+        openai_api_key = st.text_input(
+            "OpenAI API Key",
+            value=settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", ""),
+            type="password",
+            help="OpenAI API key (sk-...)"
+        )
+        research_model_default = "gpt-4o-mini"
+        verification_model_default = "gpt-4o-mini"
+        active_api_key = openai_api_key
+        active_project_id = None
 
     st.subheader("Retrieval Options")
     vector_search_k = st.slider(
@@ -78,7 +105,7 @@ with st.sidebar:
     st.subheader("Research Agent Options")
     research_model_id = st.text_input(
         "Research Model ID",
-        value="meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
+        value=research_model_default
     )
     research_temp = st.slider(
         "Research Temperature",
@@ -103,7 +130,7 @@ with st.sidebar:
     st.subheader("Verification Agent Options")
     verification_model_id = st.text_input(
         "Verification Model ID",
-        value="ibm/granite-4-h-small"
+        value=verification_model_default
     )
     verification_temp = st.slider(
         "Verification Temperature",
@@ -148,11 +175,9 @@ st.markdown("Multi-agent question answering with hybrid retrieval, relevance che
 
 with st.expander("Document Management", expanded=(st.session_state.retriever is None)):
     st.info(
-        "First-Time Setup Note: When processing a PDF for the first time, Docling automatically "
-        "downloads layout and parsing models (~500 MB) from Hugging Face. This download happens "
-        "only once and the files are permanently cached on your machine (~/.cache/huggingface). "
-        "All subsequent runs use the local cache without redownloading. Ensure a stable internet "
-        "connection during the initial PDF run."
+        "Setup Note: When processing a PDF for the first time, Docling downloads required "
+        "layout models (~500 MB) from Hugging Face once and permanently caches them in ~/.cache/huggingface. "
+        "Text (.txt) and Markdown (.md) files are read directly without downloading models."
     )
 
     uploaded_files = st.file_uploader(
@@ -164,8 +189,18 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
 
     if uploaded_files:
         if st.button("Process and Index Documents"):
-            with st.spinner("Processing documents with Docling and building index..."):
+            with st.status("Processing and indexing documents...", expanded=True) as status:
                 try:
+                    clean_api_key = active_api_key.strip() if active_api_key else ""
+                    if not clean_api_key:
+                        status.update(label="Authentication error: Missing API Key", state="error")
+                        st.error(
+                            f"Please provide an API key for {provider_choice} in the sidebar configuration "
+                            f"(or set it in your .env file) before processing documents."
+                        )
+                        st.stop()
+
+                    status.write("Step 1: Saving and parsing uploaded files with Docling...")
                     saved_paths = []
                     for uploaded_file in uploaded_files:
                         target_path = TEMP_UPLOAD_DIR / uploaded_file.name
@@ -177,6 +212,7 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
                     chunks = processor.process(saved_paths)
 
                     if not chunks:
+                        status.update(label="Processing failed: No chunks extracted", state="error")
                         error_details = ""
                         has_network_issue = False
                         if processor.last_errors:
@@ -187,65 +223,91 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
                                     has_network_issue = True
                             error_details = "\n" + "\n".join(lines)
 
-                        base_msg = "No valid text chunks could be extracted from uploaded files."
+                        base_msg = "No text chunks could be extracted from the uploaded files."
                         if has_network_issue:
                             st.error(
                                 f"{base_msg}\n\n"
-                                "Network error detected during initial model download from Hugging Face.\n"
+                                "Network connection issue detected while downloading Docling models.\n"
                                 f"Details:{error_details}\n\n"
-                                "Please check your internet connection or DNS and click 'Process and Index Documents' "
-                                "again to resume and complete the one-time model download."
+                                "Please ensure your internet connection is active and click 'Process and Index Documents' again."
                             )
                         else:
                             st.error(f"{base_msg}{error_details}")
-                    else:
-                        builder = RetrieverBuilder(
-                            project_id=project_id_input,
-                            api_key=api_key_input if api_key_input else None
-                        )
-                        retriever = builder.build_hybrid_retriever(
-                            docs=chunks,
-                            k=vector_search_k,
-                            weights=[bm25_weight, vector_weight]
-                        )
+                        st.stop()
 
-                        researcher = ResearchAgent(
-                            model_id=research_model_id,
-                            temperature=research_temp,
-                            max_tokens=research_max_tokens,
-                            project_id=project_id_input,
-                            api_key=api_key_input if api_key_input else None
-                        )
-                        verifier = VerificationAgent(
-                            model_id=verification_model_id,
-                            temperature=verification_temp,
-                            max_tokens=verification_max_tokens,
-                            project_id=project_id_input,
-                            api_key=api_key_input if api_key_input else None
-                        )
-                        relevance_checker = RelevanceChecker(
-                            temperature=0.0,
-                            project_id=project_id_input,
-                            api_key=api_key_input if api_key_input else None
-                        )
+                    status.write(f"Step 1 Complete: Extracted {len(chunks)} text chunks across {len(saved_paths)} file(s).")
 
-                        workflow = AgentWorkflow(
-                            researcher=researcher,
-                            verifier=verifier,
-                            relevance_checker=relevance_checker,
-                            max_re_research_cycles=max_re_research_cycles,
-                            relevance_k=relevance_eval_k
-                        )
+                    status.write(f"Step 2: Connecting to {provider_choice} embeddings and creating Chroma vector store...")
+                    builder = RetrieverBuilder(
+                        provider=provider_key,
+                        project_id=active_project_id,
+                        api_key=clean_api_key
+                    )
 
-                        st.session_state.retriever = retriever
-                        st.session_state.workflow = workflow
-                        st.session_state.processed_files = [f.name for f in uploaded_files]
-                        st.session_state.num_chunks = len(chunks)
-                        st.success(f"Indexed {len(chunks)} chunks from {len(uploaded_files)} file(s). Ready for chat.")
+                    status.write("Step 3: Creating BM25 keyword index and building hybrid ensemble...")
+                    retriever = builder.build_hybrid_retriever(
+                        docs=chunks,
+                        k=vector_search_k,
+                        weights=[bm25_weight, vector_weight]
+                    )
+
+                    status.write(f"Step 4: Connecting to {provider_choice} models and initializing multi-agent workflow...")
+                    researcher = ResearchAgent(
+                        provider=provider_key,
+                        model_id=research_model_id,
+                        temperature=research_temp,
+                        max_tokens=research_max_tokens,
+                        project_id=active_project_id,
+                        api_key=clean_api_key
+                    )
+                    verifier = VerificationAgent(
+                        provider=provider_key,
+                        model_id=verification_model_id,
+                        temperature=verification_temp,
+                        max_tokens=verification_max_tokens,
+                        project_id=active_project_id,
+                        api_key=clean_api_key
+                    )
+                    relevance_checker = RelevanceChecker(
+                        provider=provider_key,
+                        temperature=0.0,
+                        project_id=active_project_id,
+                        api_key=clean_api_key
+                    )
+
+                    workflow = AgentWorkflow(
+                        researcher=researcher,
+                        verifier=verifier,
+                        relevance_checker=relevance_checker,
+                        max_re_research_cycles=max_re_research_cycles,
+                        relevance_k=relevance_eval_k
+                    )
+
+                    st.session_state.retriever = retriever
+                    st.session_state.workflow = workflow
+                    st.session_state.processed_files = [f.name for f in uploaded_files]
+                    st.session_state.num_chunks = len(chunks)
+
+                    status.update(
+                        label=f"Indexing complete: {len(chunks)} chunks ready from {len(uploaded_files)} file(s).",
+                        state="complete",
+                        expanded=False
+                    )
+                    st.success(f"System ready using {provider_choice}. You can now ask questions below.")
 
                 except Exception as e:
-                    logger.error(f"Error during ingestion: {e}")
-                    st.error(f"Failed to process documents: {e}")
+                    err_str = str(e)
+                    logger.error(f"Error during ingestion: {err_str}")
+                    status.update(label="Error during indexing", state="error")
+                    if "IAM Token" in err_str or "Response [400]" in err_str:
+                        st.error(
+                            "Failed to authenticate with IBM Cloud (IAM Token Response 400):\n\n"
+                            "1. Your WatsonX API Key is missing or invalid. Please verify the key in the sidebar.\n"
+                            "2. If using your own IBM Cloud account, change 'skills-network' to your WatsonX Project ID.\n"
+                            "3. Alternatively, switch the 'Model Provider' to OpenAI in the sidebar if you have an OpenAI key."
+                        )
+                    else:
+                        st.error(f"Failed to process documents: {e}")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -253,7 +315,7 @@ with col1:
 with col2:
     st.metric("Total Extracted Chunks", st.session_state.num_chunks)
 with col3:
-    status_text = "Active" if st.session_state.retriever is not None else "Awaiting Documents"
+    status_text = f"Active ({provider_choice})" if st.session_state.retriever is not None else "Awaiting Documents"
     st.metric("Retriever Status", status_text)
 
 if st.session_state.processed_files:
@@ -289,17 +351,20 @@ if user_query:
         st.session_state.messages.append({"role": "assistant", "content": response_text})
     else:
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing relevance, researching context, and verifying answer..."):
+            with st.status("Analyzing and answering question...", expanded=True) as query_status:
                 try:
                     pipeline_result = st.session_state.workflow.full_pipeline(
                         question=user_query,
                         retriever=st.session_state.retriever,
-                        custom_instructions=custom_instructions.strip() if custom_instructions else None
+                        custom_instructions=custom_instructions.strip() if custom_instructions else None,
+                        step_callback=lambda msg: query_status.write(msg)
                     )
 
                     answer = pipeline_result.get("draft_answer", "No answer generated.")
                     report = pipeline_result.get("verification_report", "")
                     sources = pipeline_result.get("retrieved_documents", [])
+
+                    query_status.update(label="Complete", state="complete", expanded=False)
 
                     st.write(answer)
 
@@ -324,6 +389,7 @@ if user_query:
 
                 except Exception as e:
                     logger.error(f"Error answering query: {e}")
+                    query_status.update(label="Query execution error", state="error")
                     error_msg = f"An error occurred while answering your question: {e}"
                     st.error(error_msg)
                     st.session_state.messages.append({

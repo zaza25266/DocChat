@@ -1,8 +1,6 @@
 import os
 import logging
 from typing import Dict, List, Optional
-from ibm_watsonx_ai.foundation_models import ModelInference
-from ibm_watsonx_ai import Credentials, APIClient
 from langchain.schema import Document
 from config.settings import settings
 
@@ -11,32 +9,52 @@ logger = logging.getLogger(__name__)
 class VerificationAgent:
     def __init__(
         self,
-        model_id: str = "ibm/granite-4-h-small",
+        provider: str = "watsonx",
+        model_id: Optional[str] = None,
         temperature: float = 0.0,
         max_tokens: int = 200,
         project_id: Optional[str] = None,
         api_key: Optional[str] = None,
         url: Optional[str] = None
     ):
-        target_url = url or getattr(settings, "WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
-        target_project_id = project_id or getattr(settings, "WATSONX_PROJECT_ID", "skills-network")
-        target_key = api_key or getattr(settings, "WATSONX_APIKEY", "") or os.environ.get("WATSONX_APIKEY", "")
+        self.provider = provider.lower()
 
-        cred_kwargs = {"url": target_url}
-        if target_key:
-            cred_kwargs["api_key"] = target_key
+        if self.provider == "openai":
+            from langchain_openai import ChatOpenAI
+            target_model = model_id or "gpt-4o-mini"
+            target_key = (api_key or getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")).strip()
+            self.model = ChatOpenAI(
+                model=target_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=target_key
+            )
+            logger.info(f"VerificationAgent initialized with OpenAI model '{target_model}'.")
+        else:
+            from ibm_watsonx_ai.foundation_models import ModelInference
+            from ibm_watsonx_ai import Credentials, APIClient
 
-        credentials = Credentials(**cred_kwargs)
-        self.client = APIClient(credentials)
-        self.model = ModelInference(
-            model_id=model_id,
-            credentials=credentials,
-            project_id=target_project_id,
-            params={
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-        )
+            target_model = model_id or "ibm/granite-4-h-small"
+            target_url = url or getattr(settings, "WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+            target_project_id = project_id or getattr(settings, "WATSONX_PROJECT_ID", "skills-network")
+            target_key = (api_key or getattr(settings, "WATSONX_APIKEY", "") or os.environ.get("WATSONX_APIKEY", "")).strip()
+
+            cred_kwargs = {"url": target_url}
+            if target_key:
+                cred_kwargs["api_key"] = target_key
+
+            credentials = Credentials(**cred_kwargs)
+            self.client = APIClient(credentials)
+            self.model = ModelInference(
+                model_id=target_model,
+                credentials=credentials,
+                project_id=target_project_id,
+                params={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            logger.info(f"VerificationAgent initialized with WatsonX model '{target_model}'.")
 
     def sanitize_response(self, response_text: str) -> str:
         return response_text.strip()
@@ -78,9 +96,9 @@ Additional Details: [Any extra information or explanations]
                     value = value.strip()
 
                     if key == "supported":
-                        verification["Supported"] = value.upper()
+                        verification["Supported"] = "YES" if "YES" in value.upper() else "NO"
                     elif key == "relevant":
-                        verification["Relevant"] = value.upper()
+                        verification["Relevant"] = "YES" if "YES" in value.upper() else "NO"
                     elif key in ("unsupported claims", "unsupported_claims"):
                         if value.startswith("[") and value.endswith("]"):
                             items = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
@@ -136,34 +154,22 @@ Additional Details: [Any extra information or explanations]
         prompt = self.generate_prompt(answer, context)
 
         try:
-            response = self.model.chat(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
+            if self.provider == "openai":
+                response = self.model.invoke([{"role": "user", "content": prompt}])
+                llm_response = str(response.content).strip()
+            else:
+                response = self.model.chat(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                )
+                llm_response = response["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            logger.error(f"Error during verification model inference: {e}")
-            raise RuntimeError(f"Failed to verify answer due to a model error: {e}") from e
-
-        try:
-            llm_response = response["choices"][0]["message"]["content"].strip()
-        except (IndexError, KeyError, TypeError) as e:
-            logger.warning(f"Unexpected response structure in verification: {e}")
-            fallback = {
-                "Supported": "NO",
-                "Unsupported Claims": [],
-                "Contradictions": [],
-                "Relevant": "NO",
-                "Additional Details": "Model returned invalid response structure."
-            }
-            return {
-                "verification_report": self.format_verification_report(fallback),
-                "context_used": context,
-                "parsed": fallback
-            }
+            logger.error(f"Error during verification model inference ({self.provider}): {e}")
+            raise RuntimeError(f"Failed to verify answer due to model error: {e}") from e
 
         sanitized_response = self.sanitize_response(llm_response)
         parsed = self.parse_verification_response(sanitized_response)

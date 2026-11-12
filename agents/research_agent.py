@@ -1,7 +1,5 @@
 import os
 from typing import Dict, List, Optional
-from ibm_watsonx_ai.foundation_models import ModelInference
-from ibm_watsonx_ai import Credentials, APIClient
 from langchain.schema import Document
 from config.settings import settings
 from utils.logging import logger
@@ -9,32 +7,52 @@ from utils.logging import logger
 class ResearchAgent:
     def __init__(
         self,
-        model_id: str = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8",
+        provider: str = "watsonx",
+        model_id: Optional[str] = None,
         temperature: float = 0.3,
         max_tokens: int = 300,
         project_id: Optional[str] = None,
         api_key: Optional[str] = None,
         url: Optional[str] = None
     ):
-        target_url = url or getattr(settings, "WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
-        target_project_id = project_id or getattr(settings, "WATSONX_PROJECT_ID", "skills-network")
-        target_key = api_key or getattr(settings, "WATSONX_APIKEY", "") or os.environ.get("WATSONX_APIKEY", "")
+        self.provider = provider.lower()
 
-        cred_kwargs = {"url": target_url}
-        if target_key:
-            cred_kwargs["api_key"] = target_key
+        if self.provider == "openai":
+            from langchain_openai import ChatOpenAI
+            target_model = model_id or "gpt-4o-mini"
+            target_key = (api_key or getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")).strip()
+            self.model = ChatOpenAI(
+                model=target_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=target_key
+            )
+            logger.info(f"ResearchAgent initialized with OpenAI model '{target_model}'.")
+        else:
+            from ibm_watsonx_ai.foundation_models import ModelInference
+            from ibm_watsonx_ai import Credentials, APIClient
 
-        credentials = Credentials(**cred_kwargs)
-        self.client = APIClient(credentials)
-        self.model = ModelInference(
-            model_id=model_id,
-            credentials=credentials,
-            project_id=target_project_id,
-            params={
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
-        )
+            target_model = model_id or "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
+            target_url = url or getattr(settings, "WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+            target_project_id = project_id or getattr(settings, "WATSONX_PROJECT_ID", "skills-network")
+            target_key = (api_key or getattr(settings, "WATSONX_APIKEY", "") or os.environ.get("WATSONX_APIKEY", "")).strip()
+
+            cred_kwargs = {"url": target_url}
+            if target_key:
+                cred_kwargs["api_key"] = target_key
+
+            credentials = Credentials(**cred_kwargs)
+            self.client = APIClient(credentials)
+            self.model = ModelInference(
+                model_id=target_model,
+                credentials=credentials,
+                project_id=target_project_id,
+                params={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            logger.info(f"ResearchAgent initialized with WatsonX model '{target_model}'.")
 
     def sanitize_response(self, response_text: str) -> str:
         return response_text.strip()
@@ -68,23 +86,22 @@ class ResearchAgent:
         prompt = self.generate_prompt(question, context, custom_instructions=custom_instructions)
 
         try:
-            response = self.model.chat(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            )
+            if self.provider == "openai":
+                response = self.model.invoke([{"role": "user", "content": prompt}])
+                llm_response = str(response.content).strip()
+            else:
+                response = self.model.chat(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                )
+                llm_response = response["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            logger.error(f"Error during research model inference: {e}")
+            logger.error(f"Error during research model inference ({self.provider}): {e}")
             raise RuntimeError(f"Failed to generate answer due to model error: {e}") from e
-
-        try:
-            llm_response = response["choices"][0]["message"]["content"].strip()
-        except (IndexError, KeyError, TypeError) as e:
-            logger.warning(f"Unexpected response structure: {e}")
-            llm_response = "I cannot answer this question based on the provided documents."
 
         draft_answer = self.sanitize_response(llm_response) if llm_response else "I cannot answer this question based on the provided documents."
 

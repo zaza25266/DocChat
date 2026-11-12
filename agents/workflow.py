@@ -1,5 +1,5 @@
 import logging
-from typing import TypedDict, List, Dict, Optional
+from typing import TypedDict, List, Dict, Optional, Callable
 from langgraph.graph import StateGraph, END
 from langchain.schema import Document
 from langchain.retrievers import EnsembleRetriever
@@ -121,29 +121,79 @@ class AgentWorkflow:
         self,
         question: str,
         retriever: EnsembleRetriever,
-        custom_instructions: Optional[str] = None
+        custom_instructions: Optional[str] = None,
+        step_callback: Optional[Callable[[str], None]] = None
     ) -> Dict:
         try:
+            if step_callback:
+                step_callback("Step 1: Retrieving relevant passages via hybrid search (BM25 + Dense Vector)...")
+
             documents = retriever.invoke(question)
             logger.info(f"Retrieved {len(documents)} document chunks for question.")
 
-            initial_state: AgentState = {
-                "question": question,
-                "documents": documents,
-                "draft_answer": "",
-                "verification_report": "",
-                "is_relevant": False,
-                "retriever": retriever,
-                "iteration_count": 0,
-                "custom_instructions": custom_instructions
-            }
+            if step_callback:
+                step_callback(f"Retrieved {len(documents)} candidate chunks. Evaluating question relevance...")
 
-            final_state = self.compiled_workflow.invoke(initial_state)
+            classification = self.relevance_checker.check(
+                question=question,
+                retriever=retriever,
+                k=self.relevance_k
+            )
+
+            if classification not in ("CAN_ANSWER", "PARTIAL"):
+                if step_callback:
+                    step_callback("Query evaluated as out-of-scope or unsupported by document content.")
+                return {
+                    "draft_answer": (
+                        "This question is not related to the uploaded document(s), or the documents "
+                        "do not contain sufficient data to answer it. Please ask a question relevant "
+                        "to your uploaded documents."
+                    ),
+                    "verification_report": "**Relevance:** NO\n**Supported:** NO\n**Additional Details:** Early exit triggered because no relevant data was found.",
+                    "is_relevant": False,
+                    "retrieved_documents": documents
+                }
+
+            if step_callback:
+                step_callback("Step 2: Context is relevant. Synthesizing draft answer with Research Agent...")
+
+            research_res = self.researcher.generate(
+                question,
+                documents,
+                custom_instructions=custom_instructions
+            )
+            draft_answer = research_res["draft_answer"]
+
+            if step_callback:
+                step_callback("Step 3: Auditing draft answer for factual consistency with Verification Agent...")
+
+            verification_res = self.verifier.check(draft_answer, documents)
+            verification_report = verification_res["verification_report"]
+
+            iterations = 1
+            while iterations <= self.max_re_research_cycles and (
+                "Supported: NO" in verification_report or "Relevant: NO" in verification_report
+            ):
+                if step_callback:
+                    step_callback(f"Verification flagged unsupported claims. Re-researching (cycle {iterations}/{self.max_re_research_cycles})...")
+
+                research_res = self.researcher.generate(
+                    question,
+                    documents,
+                    custom_instructions=f"{custom_instructions or ''}\nNote: Previous draft had verification issues: {verification_report}"
+                )
+                draft_answer = research_res["draft_answer"]
+                verification_res = self.verifier.check(draft_answer, documents)
+                verification_report = verification_res["verification_report"]
+                iterations += 1
+
+            if step_callback:
+                step_callback("Step 4: Answer generation and verification complete.")
 
             return {
-                "draft_answer": final_state.get("draft_answer", ""),
-                "verification_report": final_state.get("verification_report", ""),
-                "is_relevant": final_state.get("is_relevant", False),
+                "draft_answer": draft_answer,
+                "verification_report": verification_report,
+                "is_relevant": True,
                 "retrieved_documents": documents
             }
         except Exception as e:
