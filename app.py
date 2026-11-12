@@ -85,11 +85,6 @@ with st.sidebar:
         else:
             active_model_id = selected_preset
 
-        embedding_model_id = st.text_input(
-            "Embedding Model ID",
-            value="ibm/granite-embedding-278m-multilingual",
-            help="WatsonX embedding model for vector indexing"
-        )
         active_api_key = watson_api_key
         active_project_id = watson_project_id
         active_api_url = watson_url
@@ -127,11 +122,6 @@ with st.sidebar:
         else:
             active_model_id = selected_preset
 
-        embedding_model_id = st.text_input(
-            "Embedding Model ID",
-            value="text-embedding-3-small",
-            help="OpenAI embedding model for vector indexing"
-        )
         active_api_key = openai_api_key
         active_project_id = None
         active_api_url = openai_base_url
@@ -170,17 +160,51 @@ with st.sidebar:
         else:
             active_model_id = selected_preset
 
-        embedding_model_id = st.text_input(
-            "Embedding Model ID",
-            value="text-embedding-3-small",
-            help="Embedding model supported by your custom API or endpoint"
-        )
         active_api_key = custom_api_key
         active_project_id = None
         active_api_url = custom_api_url
 
     research_model_default = active_model_id
     verification_model_default = active_model_id
+
+    st.subheader("Embedding Model (Vector Search)")
+    embedding_source = st.radio(
+        "Embedding Source",
+        options=["Local Offline Model (Free, Cached)", "Cloud API Provider"],
+        index=0,
+        help="Local models download once and run 100% offline on your machine with 0 API keys and zero cost. Cloud models use the remote API."
+    )
+
+    if embedding_source == "Local Offline Model (Free, Cached)":
+        embedding_type = "local"
+        local_model_presets = [
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "BAAI/bge-small-en-v1.5",
+            "sentence-transformers/paraphrase-MiniLM-L3-v2",
+            "Custom Local HuggingFace Model..."
+        ]
+        selected_local_emb = st.selectbox(
+            "Select Local Embedding Model",
+            options=local_model_presets,
+            index=0,
+            help="Downloaded once to ~/.cache/huggingface and cached permanently. Runs fast on CPU."
+        )
+        if selected_local_emb == "Custom Local HuggingFace Model...":
+            custom_local_emb = st.text_input("Enter HuggingFace Model ID", value="", placeholder="e.g. BAAI/bge-small-en-v1.5")
+            active_embedding_model = custom_local_emb.strip() or "sentence-transformers/all-MiniLM-L6-v2"
+        else:
+            active_embedding_model = selected_local_emb
+    else:
+        embedding_type = "cloud"
+        if provider_key == "watsonx":
+            cloud_default_emb = "ibm/granite-embedding-278m-multilingual"
+        else:
+            cloud_default_emb = "text-embedding-3-small"
+        active_embedding_model = st.text_input(
+            "Cloud Embedding Model ID",
+            value=cloud_default_emb,
+            help="Model name for remote embedding API (requires an API that supports /v1/embeddings)"
+        )
 
     st.subheader("Retrieval Options")
     vector_search_k = st.slider(
@@ -346,13 +370,18 @@ with st.expander("Document Management", expanded=(st.session_state.retriever is 
 
                     status.write(f"Step 1 Complete: Extracted {len(chunks)} text chunks across {len(saved_paths)} file(s).")
 
-                    status.write(f"Step 2: Connecting to {provider_choice} embeddings and creating Chroma vector store...")
+                    if embedding_type == "local":
+                        status.write(f"Step 2: Loading local embedding model '{active_embedding_model}' (cached offline)...")
+                    else:
+                        status.write(f"Step 2: Connecting to {provider_choice} cloud embeddings ({active_embedding_model})...")
+
                     builder = RetrieverBuilder(
                         provider=provider_key,
-                        model_id=embedding_model_id.strip() if embedding_model_id else None,
+                        model_id=active_embedding_model.strip() if active_embedding_model else None,
                         url=clean_api_url,
                         project_id=active_project_id,
-                        api_key=clean_api_key
+                        api_key=clean_api_key,
+                        embedding_source=embedding_type
                     )
 
                     status.write("Step 3: Creating BM25 keyword index and building hybrid ensemble...")
@@ -434,7 +463,8 @@ with col1:
 with col2:
     st.metric("Total Extracted Chunks", st.session_state.num_chunks)
 with col3:
-    status_text = f"Active ({provider_choice} - {active_model_id})" if st.session_state.retriever is not None else "Awaiting Documents"
+    emb_display = active_embedding_model.split('/')[-1]
+    status_text = f"Active ({active_model_id} | {emb_display})" if st.session_state.retriever is not None else "Awaiting Documents"
     st.metric("Retriever Status", status_text)
 
 if st.session_state.processed_files:

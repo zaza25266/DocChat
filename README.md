@@ -36,7 +36,7 @@ Standard LLM applications often suffer from hallucinations—fabricating facts w
 The system consists of three distinct subsystems:
 
 1. **Ingestion Subsystem**: Ingests heterogeneous files (PDF, DOCX, TXT, Markdown), converts them into clean structured Markdown using IBM Docling, partitions text into hierarchical sections, and stores content hashes for rapid disk-cached retrieval.
-2. **Retrieval Subsystem**: Creates an ensemble search index combining lexical keyword matching (BM25) and dense semantic vector similarity (ChromaDB + embeddings from WatsonX, OpenAI, or custom OpenAI-compatible providers).
+2. **Retrieval Subsystem**: Creates an ensemble search index combining lexical keyword matching (BM25) and dense semantic vector similarity (ChromaDB + local offline cached embeddings or cloud provider embeddings).
 3. **Multi-Agent LangGraph Subsystem**: Executes a state machine consisting of Relevance Checking, Research Generation, and Verification Fact-Checking.
 
 ```
@@ -110,7 +110,7 @@ The lifecycle of a question in DocChat proceeds through five distinct stages:
 
 1. **File Upload**: The user uploads one or more reference files via the Streamlit interface. Files are saved locally to `temp_uploads/`.
 2. **Parsing and Chunking**: `DocumentProcessor` calculates the SHA-256 hash of each file. If a cache entry exists in `document_cache/`, chunks are loaded immediately. Otherwise, Docling parses the document structure into Markdown, and `MarkdownHeaderTextSplitter` partitions the text based on `#` and `##` headings.
-3. **Indexing**: `RetrieverBuilder` generates embeddings using the configured embedding model (e.g. `ibm/granite-embedding-278m-multilingual`, `text-embedding-3-small`, or custom), loads the chunk representations into ChromaDB, constructs a BM25 index, and joins them using LangChain's `EnsembleRetriever`.
+3. **Indexing**: `RetrieverBuilder` generates embeddings using either a local offline cached model (e.g. `sentence-transformers/all-MiniLM-L6-v2`, `BAAI/bge-small-en-v1.5`, downloaded once and cached permanently) or a cloud embedding API (WatsonX, OpenAI), loads the chunk representations into ChromaDB, constructs a BM25 index, and joins them using LangChain's `EnsembleRetriever`.
 4. **Agent Workflow Execution**:
    - The user inputs a query.
    - `EnsembleRetriever` fetches the top candidate chunks.
@@ -142,9 +142,10 @@ Hybrid search combines the strengths of two complementary information retrieval 
 - **Lexical Search (BM25)**:
   - Works through exact token matching, term frequency, and inverse document frequency.
   - Highly effective for technical keywords, serial numbers, product codes, abbreviations, and rare proper nouns that dense embedding models might dilute.
-- **Dense Vector Search (ChromaDB + Embeddings)**:
-  - Converts text chunks into mathematical vectors in a continuous geometric space using WatsonX, OpenAI, or custom embeddings.
-  - Effective for conceptual understanding, synonyms, and paraphrasing where the user's phrasing differs from the document's vocabulary.
+- **Dense Vector Search (ChromaDB + Local or Cloud Embeddings)**:
+  - **Local Offline Embeddings (Default)**: Downloads a lightweight model (~80 MB, e.g. `sentence-transformers/all-MiniLM-L6-v2`) on first use and permanently caches it in `~/.cache/huggingface`. Runs 100% locally on CPU with zero API costs, zero quota limits, and no 501/429 errors from chat-only LLM endpoints (like Groq, Gemini, or OpenRouter).
+  - **Cloud Embeddings**: Can alternatively use IBM WatsonX Granite embeddings or OpenAI `text-embedding-3-small` if cloud embeddings are desired.
+  - Converts text chunks into mathematical vectors in a continuous geometric space for conceptual similarity.
 - **Ensemble Fusion**:
   - LangChain's `EnsembleRetriever` normalizes the rank scores of both retrievers using reciprocal rank weighting.
   - Users can adjust the relative weights in the UI (e.g., `0.4` BM25 weight and `0.6` Vector weight).
@@ -179,10 +180,11 @@ DocChat exposes configurable options directly within the Streamlit sidebar, allo
 
 | Parameter | Default | Description | Impact of Modification |
 |---|---|---|---|
-| **AI Service Provider** | `WatsonX AI` | Choose between WatsonX AI, OpenAI, or Custom API (OpenAI-Compatible) | Selects the active backend service for embeddings and reasoning agents. |
+| **AI Service Provider** | `WatsonX AI` | Choose between WatsonX AI, OpenAI, or Custom API (OpenAI-Compatible) | Selects the active LLM brain for reasoning agents (Research, Verification, Relevance). |
 | **API Base URL / Endpoint** | Provider default | Custom API endpoint or proxy URL | Allows pointing to alternative WatsonX regions, OpenAI proxies, or OpenAI-compatible trial services (e.g., Groq, OpenRouter, Ollama). |
 | **Model Selection** | First preset | Preset dropdown with a "Custom Model..." write-in option | Choose from popular models or enter any custom / free trial model ID available on your account. |
-| **Embedding Model ID** | `ibm/granite-embedding-278m-multilingual` / `text-embedding-3-small` | Model used for semantic vector indexing | Determines the embedding representation for Chroma vector search. |
+| **Embedding Source** | `Local Offline Model (Free, Cached)` | Local offline models vs. Cloud API provider | Local models run offline with zero API keys and zero cost. Cloud uses the remote provider API. |
+| **Embedding Model** | `sentence-transformers/all-MiniLM-L6-v2` | Model used for semantic vector indexing | Local model (~80 MB) downloads on first use and caches permanently in `~/.cache/huggingface`. |
 | **Retrieved Chunks (k)** | `10` | Number of candidate chunks returned by the retriever | Higher values provide broader context but may introduce irrelevant noise or exceed token limits. |
 | **BM25 Keyword Weight** | `0.4` | Weight given to lexical keyword retrieval | Increase when working with code, IDs, technical specs, or strict keyword queries. |
 | **Vector Semantic Weight** | `0.6` | Weight given to dense semantic embedding retrieval | Increase when queries involve conceptual reasoning, paraphrasing, or abstract questions. |
@@ -312,8 +314,9 @@ DocChat/
 │   ├── __init__.py                 # Processor exports
 │   └── file_handler.py             # Docling parser, header splitter, cache logic
 ├── retriever/                      # Retrieval index builders
-│   ├── __init__.py                 # RetrieverBuilder exports
-│   └── builder.py                  # BM25 + Chroma hybrid ensemble builder
+│   ├── __init__.py                 # RetrieverBuilder and LocalEmbeddings exports
+│   ├── builder.py                  # BM25 + Chroma hybrid ensemble builder
+│   └── local_embeddings.py         # PyTorch/Transformers offline cached embeddings
 ├── utils/                          # Utilities and logging
 │   ├── __init__.py
 │   └── logging.py                  # Loguru logger setup

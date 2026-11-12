@@ -16,11 +16,18 @@ class RetrieverBuilder:
         url: Optional[str] = None,
         project_id: Optional[str] = None,
         api_key: Optional[str] = None,
-        truncate_input_tokens: int = 512
+        truncate_input_tokens: int = 512,
+        embedding_source: str = "local"
     ):
         self.provider = provider.lower()
+        self.embedding_source = embedding_source.lower()
 
-        if self.provider in ("openai", "custom", "custom api"):
+        if self.embedding_source == "local" or self.provider == "local":
+            from .local_embeddings import LocalHuggingFaceEmbeddings
+            local_model = model_id or "sentence-transformers/all-MiniLM-L6-v2"
+            self.embeddings = LocalHuggingFaceEmbeddings(model_name=local_model)
+            logger.info(f"Initialized local cached embedding model '{local_model}'.")
+        elif self.provider in ("openai", "custom", "custom api"):
             from langchain_openai import OpenAIEmbeddings
             emb_model = model_id or "text-embedding-3-small"
             target_api_key = (
@@ -38,7 +45,7 @@ class RetrieverBuilder:
             if target_url:
                 init_kwargs["base_url"] = target_url
             self.embeddings = OpenAIEmbeddings(**init_kwargs)
-            logger.info(f"Initialized {self.provider} embeddings with model '{emb_model}' (base_url: {target_url or 'default'}).")
+            logger.info(f"Initialized {self.provider} cloud embeddings with model '{emb_model}' (base_url: {target_url or 'default'}).")
         else:
             from ibm_watsonx_ai.metanames import EmbedTextParamsMetaNames
             from langchain_ibm import WatsonxEmbeddings
